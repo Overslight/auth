@@ -5,28 +5,3 @@ edition = "2021"
 authors = ["Federico Fusco"]
 
 [dependencies]
-thiserror = "1"
-surrealdb = "1.1.1"
-argon2 = "0.5.3"
-async-trait = "0.1"
-typetag = "0.2"
-strum = "0.26"
-strum_macros = "0.26"
-serde_json = "1"
-rand = "*"
-
-[dependencies.totp-rs]
-version = "5.5"
-features = ["qr"]
-
-[dependencies.jsonwebtoken]
-version = "9.2"
-features = ["use_pem"]
-
-[dependencies.serde]
-version = "1"
-features = ["derive"]
-
-[dependencies.uuid]
-version = "1.6.1"
-features = ["v4", "fast-rng", "serde"]
