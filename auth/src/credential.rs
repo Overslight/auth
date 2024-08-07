@@ -9,7 +9,7 @@ use github::GithubOauth;
 use serde::{Deserialize, Serialize};
 use username_password::UsernamePassword;
 use uuid::Uuid;
- 
+
 pub mod email_password;
 pub mod github;
 pub mod username_password;
@@ -24,13 +24,35 @@ pub trait Credential
 where
     Self: Sized,
 {
-    fn last_authentication(&self) -> &NaiveDateTime;
     fn created(&self) -> &NaiveDateTime;
-    fn cid(&self) -> &Uuid;
-    fn uid(&self) -> &Uuid;
-    fn get_by_cid(connection: DatabaseConnection, query_cid: &Uuid) -> AuthResult<Self>;
-    fn get_by_uid(connection: DatabaseConnection, query_uid: &Uuid) -> AuthResult<Self>;
+
+    fn last_authentication(&self) -> &NaiveDateTime;
+    fn set_last_authentication(&mut self, connection: DatabaseConnection) -> AuthResult<()>;
+
+    fn verified(&self) -> bool;
+    fn set_verified(
+        &mut self,
+        connection: DatabaseConnection,
+        updated_verified: bool,
+    ) -> AuthResult<()>;
+
+    fn disabled(&self) -> bool;
+    fn set_disabled(
+        &mut self,
+        connection: DatabaseConnection,
+        updated_disabled: bool,
+    ) -> AuthResult<()>;
+
+    fn last_update(&self) -> &NaiveDateTime;
+    fn update(&self, connection: DatabaseConnection) -> AuthResult<()>;
     fn delete(&self, connection: DatabaseConnection) -> AuthResult<()>;
+
+    fn cid(&self) -> &Uuid;
+    fn get_by_cid(connection: DatabaseConnection, query_cid: &Uuid) -> AuthResult<Self>;
+
+    fn uid(&self) -> &Uuid;
+    fn get_by_uid(connection: DatabaseConnection, query_uid: &Uuid) -> AuthResult<Self>;
+
     fn get_owner(&self, connection: DatabaseConnection) -> AuthResult<User>;
 }
 
@@ -58,7 +80,10 @@ impl CredentialLookup {
     }
 
     pub fn has_multiple_credentials(&self) -> bool {
-        (self.email_password.is_some() as u32) + (self.github_oauth.is_some() as u32) + (self.username_password.is_some() as u32) > 1
+        (self.email_password.is_some() as u32)
+            + (self.github_oauth.is_some() as u32)
+            + (self.username_password.is_some() as u32)
+            > 1
     }
 
     pub fn get_by_uid(connection: DatabaseConnection, query_uid: &Uuid) -> AuthResult<Self> {
@@ -87,11 +112,14 @@ impl CredentialLookup {
         }
     }
 
-    pub fn username_password(&self, connection: DatabaseConnection) -> AuthResult<UsernamePassword> {
+    pub fn username_password(
+        &self,
+        connection: DatabaseConnection,
+    ) -> AuthResult<UsernamePassword> {
         match self.username_password {
             Some(cid) => UsernamePassword::get_by_cid(connection, &cid),
             None => Err(AuthError::NotFound(
-                "No username/password credential is associated!".into()
+                "No username/password credential is associated!".into(),
             )),
         }
     }

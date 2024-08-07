@@ -18,6 +18,7 @@ diesel::table! {
         email -> Citext,
         password -> Text,
         verified -> Bool,
+        disabled -> Bool,
         last_update -> Timestamp,
         last_authentication -> Timestamp,
         created -> Timestamp,
@@ -29,9 +30,11 @@ diesel::table! {
         cid -> Uuid,
         uid -> Uuid,
         provider_id -> Int4,
-        email -> Text,
+        username -> Text,
         last_authentication -> Timestamp,
+        last_update -> Timestamp,
         created -> Timestamp,
+        disabled -> Bool,
     }
 }
 
@@ -42,6 +45,7 @@ diesel::table! {
         username -> Text,
         password -> Text,
         verified -> Bool,
+        disabled -> Bool,
         last_update -> Timestamp,
         last_authentication -> Timestamp,
         created -> Timestamp,

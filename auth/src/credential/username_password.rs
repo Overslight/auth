@@ -4,9 +4,10 @@ use crate::{
     database::DatabaseConnection,
     error::*,
     schema::{
-        credentials::{self, username_password, uid},
-        username_password_credentials,
-    }, user::User,
+        credentials::{self, dsl::*},
+        username_password_credentials::{self, dsl::*},
+    },
+    user::User,
 };
 use chrono::{NaiveDateTime, Utc};
 use diesel::{pg::Pg, prelude::*};
@@ -23,8 +24,11 @@ pub struct PartialUsernamePassword {
 }
 
 impl PartialUsernamePassword {
-    pub fn new(username: String, password: String) -> Self {
-        Self { username, password }
+    pub fn new(partial_username: String, partial_password: String) -> Self {
+        Self {
+            username: partial_username,
+            password: partial_password,
+        }
     }
 }
 
@@ -38,11 +42,15 @@ impl PartialCredential<UsernamePassword> for PartialUsernamePassword {
             )
             .is_ok();
 
-        if valid_password {
-            Ok(credential)
-        } else {
-            Err(AuthError::NotFound("Incorrect username or password!".into()))
+        if !valid_password {
+            return Err(AuthError::NotFound("Incorrect username or password!".into()))
         }
+
+        if credential.disabled() {
+            return Err(AuthError::CredentialDisabled);
+        }
+
+        Ok(credential)
     }
 
     fn associate(
@@ -54,18 +62,21 @@ impl PartialCredential<UsernamePassword> for PartialUsernamePassword {
             .hash_password(self.password.as_bytes(), &SaltString::generate(&mut OsRng))?
             .to_string();
 
+        let timestamp = Utc::now().naive_utc();
+
         let credential = InsertableUsernamePassword {
             cid: &Uuid::new_v4(),
             uid: owner_uid,
             username: &self.username,
             password: &hashed_password,
             verified: false,
-            last_update: &Utc::now().naive_utc(),
-            last_authentication: &Utc::now().naive_utc(),
-            created: &Utc::now().naive_utc(),
+            disabled: false,
+            last_update: &timestamp,
+            last_authentication: &timestamp,
+            created: &timestamp,
         };
 
-        Ok(connection.transaction(|connection| {
+        connection.transaction::<UsernamePassword, AuthError, _>(|connection| {
             let credential = diesel::insert_into(username_password_credentials::table)
                 .values(&credential)
                 .returning(UsernamePassword::as_returning())
@@ -80,14 +91,14 @@ impl PartialCredential<UsernamePassword> for PartialUsernamePassword {
 
             diesel::insert_into(credentials::table)
                 .values(&credential_lookup)
-                .on_conflict(uid)
+                .on_conflict(credentials::dsl::uid)
                 .do_update()
                 .set(username_password.eq(credential.cid()))
                 .returning(CredentialLookup::as_returning())
                 .get_result(connection)?;
 
-            diesel::result::QueryResult::Ok(credential)
-        })?)
+            Ok(credential)
+        })
     }
 }
 
@@ -100,79 +111,102 @@ struct InsertableUsernamePassword<'a> {
     pub username: &'a str,
     pub password: &'a str,
     pub verified: bool,
+    pub disabled: bool,
     pub last_update: &'a NaiveDateTime,
     pub last_authentication: &'a NaiveDateTime,
     pub created: &'a NaiveDateTime,
 }
 
-#[derive(Queryable, Selectable, Debug)]
+#[derive(Queryable, AsChangeset, Selectable)]
 #[diesel(table_name = username_password_credentials)]
 #[diesel(check_for_backend(Pg))]
+#[diesel(primary_key(cid))]
 pub struct UsernamePassword {
     pub cid: Uuid,
     pub uid: Uuid,
     pub username: String,
     pub password: String,
     pub verified: bool,
+    pub disabled: bool,
     pub last_update: NaiveDateTime,
     pub last_authentication: NaiveDateTime,
     pub created: NaiveDateTime,
 }
 
 impl UsernamePassword {
-    pub fn get_by_username(connection: DatabaseConnection, query_username: &str) -> AuthResult<Self> {
-        use crate::schema::username_password_credentials::dsl::*;
-
-        Ok(diesel::QueryDsl::filter(
+    pub fn get_by_username(
+        connection: DatabaseConnection,
+        query_username: &str,
+    ) -> AuthResult<Self> {
+        let credential = diesel::QueryDsl::filter(
             crate::schema::username_password_credentials::table,
             username.eq(query_username),
         )
         .select(UsernamePassword::as_select())
-        .first(connection)?)
+        .first(connection)?;
+
+        if credential.disabled() {
+            return Err(AuthError::CredentialDisabled);
+        }
+
+        Ok(credential)
     }
 }
 
 impl Credential for UsernamePassword {
-    fn last_authentication(&self) -> &NaiveDateTime {
-        &self.last_authentication
-    }
-
     fn created(&self) -> &NaiveDateTime {
         &self.created
     }
 
-    fn cid(&self) -> &Uuid {
-        &self.cid
+    fn last_authentication(&self) -> &NaiveDateTime {
+        &self.last_authentication
     }
 
-    fn uid(&self) -> &Uuid {
-        &self.uid
+    fn set_last_authentication(&mut self, connection: DatabaseConnection) -> AuthResult<()> {
+        self.last_authentication = Utc::now().naive_utc();
+        self.update(connection)
     }
 
-    fn get_by_cid(connection: DatabaseConnection, query_cid: &Uuid) -> AuthResult<Self> {
-        use crate::schema::username_password_credentials::dsl::*;
-
-        Ok(username_password_credentials
-            .find(query_cid)
-            .select(UsernamePassword::as_select())
-            .first(connection)?)
+    fn verified(&self) -> bool {
+        self.verified
     }
 
-    fn get_by_uid(connection: DatabaseConnection, query_uid: &Uuid) -> AuthResult<Self> {
-        use crate::schema::username_password_credentials::dsl::*;
+    fn set_verified(
+        &mut self,
+        connection: DatabaseConnection,
+        updated_verified: bool,
+    ) -> AuthResult<()> {
+        self.verified = updated_verified;
+        self.update(connection)
+    }
 
-        Ok(diesel::QueryDsl::filter(
-            crate::schema::username_password_credentials::table,
-            uid.eq(query_uid),
-        )
-        .select(UsernamePassword::as_select())
-        .first(connection)?)
+    fn disabled(&self) -> bool {
+        self.disabled
+    }
+
+    fn set_disabled(
+        &mut self,
+        connection: DatabaseConnection,
+        updated_disabled: bool,
+    ) -> AuthResult<()> {
+        self.disabled = updated_disabled;
+        self.update(connection)
+    }
+
+    fn last_update(&self) -> &NaiveDateTime {
+        &self.last_update
+    }
+
+    fn update(&self, connection: DatabaseConnection) -> AuthResult<()> {
+        diesel::update(username_password_credentials.find(self.cid()))
+            .set(self)
+            .execute(connection)?;
+
+        Ok(())
     }
 
     fn delete(&self, connection: DatabaseConnection) -> AuthResult<()> {
         connection.transaction(|connection| {
-            use crate::schema::{credentials::dsl::*, username_password_credentials::dsl::*};
-
             if !CredentialLookup::get_by_uid(connection, self.uid())?.has_multiple_credentials() {
                 return Err(AuthError::CredentialCannotDelete);
             }
@@ -185,6 +219,43 @@ impl Credential for UsernamePassword {
 
             Ok(())
         })
+    }
+
+    fn cid(&self) -> &Uuid {
+        &self.cid
+    }
+
+    fn get_by_cid(connection: DatabaseConnection, query_cid: &Uuid) -> AuthResult<Self> {
+        let credential = username_password_credentials
+            .find(query_cid)
+            .select(Self::as_select())
+            .first(connection)
+            .map_err(AuthError::from)?;
+
+        if credential.disabled() {
+            return Err(AuthError::CredentialDisabled);
+        }
+
+        Ok(credential)
+    }
+
+    fn uid(&self) -> &Uuid {
+        &self.uid
+    }
+
+    fn get_by_uid(connection: DatabaseConnection, query_uid: &Uuid) -> AuthResult<Self> {
+        let credential = diesel::QueryDsl::filter(
+            crate::schema::username_password_credentials::table,
+            username_password_credentials::dsl::uid.eq(query_uid),
+        )
+        .select(UsernamePassword::as_select())
+        .first(connection)?;
+
+        if credential.disabled() {
+            return Err(AuthError::CredentialDisabled);
+        }
+
+        Ok(credential)
     }
 
     fn get_owner(&self, connection: DatabaseConnection) -> AuthResult<User> {

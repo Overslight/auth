@@ -8,8 +8,8 @@ use crate::user::User;
 use crate::{
     database::DatabaseConnection,
     schema::{
-        credentials::{self, github_oauth, uid},
-        github_oauth_credentials::{self, provider_id},
+        credentials::{self, dsl::*},
+        github_oauth_credentials::{self, dsl::*},
     },
 };
 
@@ -19,21 +19,29 @@ use super::{
 
 pub struct PartialGithubOauth {
     pub provider_id: i32,
-    pub email: String,
+    pub username: String,
 }
 
 impl PartialGithubOauth {
-    pub fn new(query_provider_id: i32, email: String) -> Self {
+    pub fn new(partial_provider_id: i32, partial_username: String) -> Self {
         Self {
-            provider_id: query_provider_id,
-            email,
+            provider_id: partial_provider_id,
+            username: partial_username,
         }
     }
 }
 
 impl PartialCredential<GithubOauth> for PartialGithubOauth {
     fn authenticate(&self, connection: DatabaseConnection) -> AuthResult<GithubOauth> {
-        GithubOauth::get_by_provider_id(connection, self.provider_id)
+        let mut credential = GithubOauth::get_by_provider_id(connection, self.provider_id)?;
+        
+        if credential.disabled() {
+            return Err(AuthError::CredentialDisabled);
+        }
+        
+        credential.set_last_authentication(connection)?;
+
+        Ok(credential)
     }
 
     fn associate(
@@ -41,16 +49,19 @@ impl PartialCredential<GithubOauth> for PartialGithubOauth {
         connection: DatabaseConnection,
         owner_uid: &Uuid,
     ) -> AuthResult<GithubOauth> {
+        let timestamp = Utc::now().naive_utc();
         let credential = InsertableGithubOauth {
             cid: &Uuid::new_v4(),
             uid: owner_uid,
             provider_id: self.provider_id,
-            email: &self.email,
-            last_authentication: &Utc::now().naive_utc(),
-            created: &Utc::now().naive_utc(),
+            username: &self.username,
+            last_authentication: &timestamp,
+            last_update: &timestamp,
+            created: &timestamp,
+            disabled: false,
         };
 
-        Ok(connection.transaction(|connection| {
+        connection.transaction::<GithubOauth, AuthError, _>(|connection| {
             let credential = diesel::insert_into(github_oauth_credentials::table)
                 .values(&credential)
                 .returning(GithubOauth::as_returning())
@@ -65,14 +76,14 @@ impl PartialCredential<GithubOauth> for PartialGithubOauth {
 
             diesel::insert_into(credentials::table)
                 .values(&credential_lookup)
-                .on_conflict(uid)
+                .on_conflict(credentials::dsl::uid)
                 .do_update()
                 .set(github_oauth.eq(credential.cid()))
                 .returning(CredentialLookup::as_returning())
                 .get_result(connection)?;
 
-            diesel::result::QueryResult::Ok(credential)
-        })?)
+            Ok(credential)
+        })
     }
 }
 
@@ -83,21 +94,26 @@ struct InsertableGithubOauth<'a> {
     pub cid: &'a Uuid,
     pub uid: &'a Uuid,
     pub provider_id: i32,
-    pub email: &'a String,
+    pub username: &'a String,
     pub last_authentication: &'a NaiveDateTime,
+    pub last_update: &'a NaiveDateTime,
     pub created: &'a NaiveDateTime,
+    pub disabled: bool,
 }
 
-#[derive(Queryable, Selectable)]
+#[derive(Queryable, AsChangeset, Selectable)]
 #[diesel(table_name = github_oauth_credentials)]
 #[diesel(check_for_backend(Pg))]
+#[diesel(primary_key(cid))]
 pub struct GithubOauth {
     pub cid: Uuid,
     pub uid: Uuid,
     pub provider_id: i32,
-    pub email: String,
+    pub username: String,
     pub last_authentication: NaiveDateTime,
+    pub last_update: NaiveDateTime,
     pub created: NaiveDateTime,
+    pub disabled: bool,
 }
 
 impl GithubOauth {
@@ -105,50 +121,70 @@ impl GithubOauth {
         connection: DatabaseConnection,
         query_provider_id: i32,
     ) -> AuthResult<Self> {
-        Ok(diesel::QueryDsl::filter(
+        let credential = diesel::QueryDsl::filter(
             crate::schema::github_oauth_credentials::table,
             provider_id.eq(query_provider_id),
         )
-        .select(GithubOauth::as_select())
-        .first(connection)?)
+        .select(Self::as_select())
+        .first(connection)?;
+
+        if credential.disabled() {
+            return Err(AuthError::CredentialDisabled);
+        }
+
+        Ok(credential)
     }
 }
 
 impl Credential for GithubOauth {
-    fn last_authentication(&self) -> &NaiveDateTime {
-        &self.last_authentication
-    }
-
     fn created(&self) -> &NaiveDateTime {
         &self.created
     }
 
-    fn cid(&self) -> &Uuid {
-        &self.cid
+    fn last_authentication(&self) -> &NaiveDateTime {
+        &self.last_authentication
     }
 
-    fn uid(&self) -> &Uuid {
-        &self.uid
+    fn set_last_authentication(&mut self, connection: DatabaseConnection) -> AuthResult<()> {
+        self.last_authentication = Utc::now().naive_utc();
+        self.update(connection)
     }
 
-    fn get_by_cid(connection: DatabaseConnection, query_cid: &Uuid) -> AuthResult<Self> {
-        use crate::schema::github_oauth_credentials::dsl::*;
-
-        Ok(github_oauth_credentials
-            .find(query_cid)
-            .select(GithubOauth::as_select())
-            .first(connection)?)
+    fn verified(&self) -> bool {
+        true
     }
 
-    fn get_by_uid(connection: DatabaseConnection, query_uid: &Uuid) -> AuthResult<Self> {
-        use crate::schema::github_oauth_credentials::dsl::*;
+    fn set_verified(
+        &mut self,
+        _connection: DatabaseConnection,
+        _updated_verified: bool,
+    ) -> AuthResult<()> {
+        unimplemented!()
+    }
 
-        Ok(diesel::QueryDsl::filter(
-            crate::schema::github_oauth_credentials::table,
-            uid.eq(query_uid),
-        )
-        .select(GithubOauth::as_select())
-        .first(connection)?)
+    fn disabled(&self) -> bool {
+        self.disabled
+    }
+
+    fn set_disabled(
+        &mut self,
+        connection: DatabaseConnection,
+        updated_disabled: bool,
+    ) -> AuthResult<()> {
+        self.disabled = updated_disabled;
+        self.update(connection)
+    }
+
+    fn last_update(&self) -> &NaiveDateTime {
+        &self.last_update
+    }
+
+    fn update(&self, connection: DatabaseConnection) -> AuthResult<()> {
+        diesel::update(github_oauth_credentials.find(self.cid()))
+            .set(self)
+            .execute(connection)?;
+
+        Ok(())
     }
 
     fn delete(&self, connection: DatabaseConnection) -> AuthResult<()> {
@@ -167,6 +203,42 @@ impl Credential for GithubOauth {
 
             Ok(())
         })
+    }
+
+    fn cid(&self) -> &Uuid {
+        &self.cid
+    }
+
+    fn get_by_cid(connection: DatabaseConnection, query_cid: &Uuid) -> AuthResult<Self> {
+        let credential = github_oauth_credentials
+            .find(query_cid)
+            .select(Self::as_select())
+            .first(connection)?;
+
+        if credential.disabled() {
+            return Err(AuthError::CredentialDisabled);
+        }
+
+        Ok(credential)
+    }
+
+    fn uid(&self) -> &Uuid {
+        &self.uid
+    }
+
+    fn get_by_uid(connection: DatabaseConnection, query_uid: &Uuid) -> AuthResult<Self> {
+        let credential = diesel::QueryDsl::filter(
+            crate::schema::github_oauth_credentials::table,
+            github_oauth_credentials::dsl::uid.eq(query_uid),
+        )
+        .select(Self::as_select())
+        .first(connection)?;
+
+        if credential.disabled() {
+            return Err(AuthError::CredentialDisabled);
+        }
+
+        Ok(credential)
     }
 
     fn get_owner(&self, connection: DatabaseConnection) -> AuthResult<User> {

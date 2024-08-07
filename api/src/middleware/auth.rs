@@ -1,4 +1,4 @@
-use std::{ops::Deref, rc::Rc, sync::Arc};
+use std::{ops::Deref, rc::Rc};
 
 use actix_identity::{Identity, IdentityExt};
 use actix_service::Transform;
@@ -90,7 +90,9 @@ impl AllowAuthenticated {
 
         let user = web::block::<_, ApiResult<Option<User>>>(move || {
             let mut connection = pool.get()?;
-            Ok(User::get_by_uid(&mut connection, &uid).ok())
+            User::get_by_uid(&mut connection, &uid)
+                .map(|user| Some(user))
+                .map_err(ApiErrorType::from)
         })
         .await??;
 
@@ -127,11 +129,11 @@ impl Deref for AllowAuthenticated {
     }
 }
 
-pub struct RequireAuthenticated(Arc<User>);
+pub struct RequireAuthenticated(User);
 
 impl RequireAuthenticated {
     pub async fn new(identity: Option<&Identity>, pool: Option<DatabasePool>) -> ApiResult<Self> {
-        let identity = identity.ok_or(ApiErrorType::IncorrectCredential)?;
+        let identity = identity.ok_or(ApiErrorType::CredentialIncorrect)?;
 
         let pool = pool.ok_or(ApiErrorType::Unknown("Something went wrong!".into()))?;
 
@@ -139,11 +141,11 @@ impl RequireAuthenticated {
 
         let user = web::block::<_, ApiResult<User>>(move || {
             let mut connection = pool.get()?;
-            Ok(User::get_by_uid(&mut connection, &uid)?)
+            User::get_by_uid(&mut connection, &uid).map_err(ApiErrorType::from)
         })
         .await??;
 
-        Ok(Self(Arc::new(user)))
+        Ok(Self(user))
     }
 }
 
@@ -169,7 +171,7 @@ impl FromRequest for RequireAuthenticated {
 }
 
 impl Deref for RequireAuthenticated {
-    type Target = Arc<User>;
+    type Target = User;
 
     fn deref(&self) -> &Self::Target {
         &self.0

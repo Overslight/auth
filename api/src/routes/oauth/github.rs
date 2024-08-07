@@ -7,15 +7,16 @@ use auth::{
     user::User,
 };
 use oauth2::{
-    basic::BasicClient, AuthUrl, ClientId, ClientSecret, CsrfToken, RedirectUrl,
-    TokenResponse, TokenUrl,
+    basic::BasicClient, AuthUrl, ClientId, ClientSecret, CsrfToken, RedirectUrl, TokenResponse,
+    TokenUrl,
 };
 use reqwest::Url;
 use serde::Deserialize;
 
 use crate::{
     error::{ApiErrorType, ApiResult},
-    middleware::{auth::AllowAuthenticated, database::Database}, routes::oauth::{OauthCallbackAction, OauthCallbackRequest},
+    middleware::{auth::AllowAuthenticated, database::Database},
+    routes::oauth::{OauthCallbackAction, OauthCallbackRequest},
 };
 
 const USER_AGENT: &str = "Underslight Auth";
@@ -76,7 +77,7 @@ pub async fn callback(
     if user.is_some() && !query.action.requires_authentication() {
         return Err(ApiErrorType::UserAuthenticated);
     } else if user.is_none() && query.action.requires_authentication() {
-        return Err(ApiErrorType::IncorrectCredential);
+        return Err(ApiErrorType::CredentialIncorrect);
     }
 
     // Creates the GitHub Oauth2 client
@@ -140,7 +141,7 @@ pub async fn callback(
                 .await??;
                 Ok(HttpResponse::Ok().finish())
             } else {
-                Err(ApiErrorType::IncorrectCredential)
+                Err(ApiErrorType::CredentialIncorrect)
             }
         }
         OauthCallbackAction::Remove => {
@@ -151,7 +152,7 @@ pub async fn callback(
                         .github_oauth(&mut connection)?;
 
                     if credential.uid() != user.uid() {
-                        return Err(ApiErrorType::IncorrectCredential);
+                        return Err(ApiErrorType::CredentialIncorrect);
                     }
 
                     credential.delete(&mut connection)?;
@@ -162,7 +163,7 @@ pub async fn callback(
 
                 Ok(HttpResponse::Ok().finish())
             } else {
-                Err(ApiErrorType::IncorrectCredential)
+                Err(ApiErrorType::CredentialIncorrect)
             }
         }
     }

@@ -5,13 +5,13 @@ use thiserror::Error;
 #[derive(Serialize, Error, Debug, Clone)]
 pub enum ApiErrorType {
     #[error("The credentials are incorrect!")]
-    IncorrectCredential,
+    CredentialIncorrect,
     #[error("Failed to connect to auth provider!")]
     IncorrectOauthCode,
     #[error("The user doesn\'t exist or couldn\'t be found!")]
     UserNotFound,
-    #[error("The user is disabled!")]
-    UserDisabled,
+    #[error("The credential is disabled!")]
+    CredentialDisabled,
     #[error("The user is already registered!")]
     UserExists,
     #[error("The user is already authenticated!")]
@@ -28,14 +28,14 @@ pub enum ApiErrorType {
 
 #[derive(Serialize, Clone, Copy)]
 pub enum ApiErrorCode {
-    #[serde(rename = "AUTH/INCORRECT_CREDENTIAL")]
-    IncorrectCredential,
+    #[serde(rename = "AUTH/CREDENTIAL_INCORRECT")]
+    CredentialIncorrect,
     #[serde(rename = "AUTH/INCORRECT_OAUTH_CODE")]
     IncorrectOauthCode,
     #[serde(rename = "AUTH/USER_NOT_FOUND")]
     UserNotFound,
-    #[serde(rename = "AUTH/USER_DISABLED")]
-    UserDisabled,
+    #[serde(rename = "AUTH/CREDENTIAL_DISABLED")]
+    CredentialDisabled,
     #[serde(rename = "AUTH/USER_EXISTS")]
     UserExists,
     #[serde(rename = "AUTH/USER_AUTHENTICATED")]
@@ -61,10 +61,10 @@ pub type ApiResult<T> = std::result::Result<T, ApiErrorType>;
 impl From<&ApiErrorType> for ApiErrorCode {
     fn from(value: &ApiErrorType) -> Self {
         match value {
-            ApiErrorType::IncorrectCredential => Self::IncorrectCredential,
+            ApiErrorType::CredentialIncorrect => Self::CredentialIncorrect,
             ApiErrorType::IncorrectOauthCode => Self::IncorrectOauthCode,
             ApiErrorType::UserNotFound => Self::UserNotFound,
-            ApiErrorType::UserDisabled => Self::UserDisabled,
+            ApiErrorType::CredentialDisabled => Self::CredentialDisabled,
             ApiErrorType::UserExists => Self::UserExists,
             ApiErrorType::UserAuthenticated => Self::UserAuthenticated,
             ApiErrorType::CredentialAssociated => Self::CredentialAssociated,
@@ -89,13 +89,13 @@ impl ResponseError for ApiErrorType {
         use reqwest::StatusCode;
 
         match self {
-            Self::IncorrectCredential | Self::IncorrectOauthCode => StatusCode::UNAUTHORIZED,
+            Self::CredentialIncorrect | Self::IncorrectOauthCode => StatusCode::UNAUTHORIZED,
             Self::UserNotFound => StatusCode::NOT_FOUND,
             Self::UserExists | Self::CredentialAssociated | Self::CredentialCannotRemove => {
                 StatusCode::CONFLICT
             }
             Self::Unknown(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Self::UserDisabled | Self::UserAuthenticated => StatusCode::FORBIDDEN,
+            Self::CredentialDisabled | Self::UserAuthenticated => StatusCode::FORBIDDEN,
             Self::ResourceNotFound => StatusCode::NOT_FOUND,
         }
     }
@@ -110,6 +110,7 @@ impl From<auth::error::AuthError> for ApiErrorType {
         use auth::error::AuthError;
 
         match value {
+            AuthError::CredentialDisabled => Self::CredentialDisabled,
             AuthError::NotFound(_) => Self::UserNotFound,
             AuthError::Exists(_) => Self::UserExists,
             AuthError::Invalid(_) => Self::Unknown("Invalid?".into()),

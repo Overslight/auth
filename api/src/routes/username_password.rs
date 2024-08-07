@@ -32,7 +32,7 @@ pub async fn authenticate(
     let user = web::block::<_, ApiResult<User>>(move || {
         let partial_credential =
             PartialUsernamePassword::new(request.username.clone(), request.password.clone());
-        Ok(User::authenticate(&mut connection, partial_credential)?)
+        User::authenticate(&mut connection, partial_credential).map_err(ApiErrorType::from)
     })
     .await??;
 
@@ -57,7 +57,7 @@ pub async fn register(
     let user = web::block::<_, ApiResult<User>>(move || {
         let partial_credential =
             PartialUsernamePassword::new(request.username.clone(), request.password.clone());
-        Ok(User::new(&mut connection, partial_credential)?)
+        User::new(&mut connection, partial_credential).map_err(ApiErrorType::from)
     })
     .await??;
 
@@ -78,7 +78,7 @@ struct AssociationResponse {
 }
 
 #[actix_web::post("/associate")]
-pub async fn associate( 
+pub async fn associate(
     user: RequireAuthenticated,
     mut connection: Database,
     request: Json<AssociationRequest>,
@@ -124,7 +124,7 @@ pub async fn remove(
             .username_password(&mut connection)?;
 
         if credential.uid() != user.uid() {
-            return Err(ApiErrorType::IncorrectCredential);
+            return Err(ApiErrorType::CredentialIncorrect);
         }
 
         credential

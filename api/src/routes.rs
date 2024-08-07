@@ -1,8 +1,8 @@
 use actix_web::{web, Scope};
 
 pub mod email_password;
-pub mod username_password;
 pub mod oauth;
+pub mod username_password;
 
 pub fn scope() -> Scope {
     web::scope("")

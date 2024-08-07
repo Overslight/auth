@@ -40,7 +40,7 @@ impl User {
         connection: DatabaseConnection,
         partial_credential: P,
     ) -> AuthResult<Self> {
-        Ok(connection.transaction::<User, AuthError, _>(|connection| {
+        connection.transaction::<User, AuthError, _>(|connection| {
             // Creates the user
             let user = InsertableUser {
                 uid: &Uuid::new_v4(),
@@ -54,7 +54,7 @@ impl User {
             partial_credential.associate(connection, user.uid())?;
 
             Ok(user)
-        })?)
+        })
     }
 
     pub fn authenticate<C: Credential, P: PartialCredential<C>>(

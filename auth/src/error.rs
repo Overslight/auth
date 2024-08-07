@@ -12,6 +12,8 @@ pub enum AuthError {
     Hash,
     #[error("Cannot delete the only associated credential!")]
     CredentialCannotDelete,
+    #[error("The authentication method is disabled!")]
+    CredentialDisabled,
     #[error("An unknown database error occurred: {0}")]
     Database(diesel::result::Error),
     #[error("An unknown error occurred: {0}")]

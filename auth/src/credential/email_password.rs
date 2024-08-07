@@ -4,9 +4,10 @@ use crate::{
     database::DatabaseConnection,
     error::*,
     schema::{
-        credentials::{self, email_password, uid},
-        email_password_credentials,
-    }, user::User,
+        credentials::{self, dsl::*},
+        email_password_credentials::{self, dsl::*},
+    },
+    user::User,
 };
 use chrono::{NaiveDateTime, Utc};
 use diesel::{pg::Pg, prelude::*};
@@ -23,14 +24,19 @@ pub struct PartialEmailPassword {
 }
 
 impl PartialEmailPassword {
-    pub fn new(email: String, password: String) -> Self {
-        Self { email, password }
+    pub fn new(partial_email: String, partial_password: String) -> Self {
+        Self {
+            email: partial_email,
+            password: partial_password,
+        }
     }
 }
 
 impl PartialCredential<EmailPassword> for PartialEmailPassword {
     fn authenticate(&self, connection: DatabaseConnection) -> AuthResult<EmailPassword> {
-        let credential = EmailPassword::get_by_email(connection, &self.email)?;
+        let mut credential = EmailPassword::get_by_email(connection, &self.email)?;
+
+        // Checks if the password is correct
         let valid_password = Argon2::default()
             .verify_password(
                 self.password.as_bytes(),
@@ -38,11 +44,13 @@ impl PartialCredential<EmailPassword> for PartialEmailPassword {
             )
             .is_ok();
 
-        if valid_password {
-            Ok(credential)
-        } else {
-            Err(AuthError::NotFound("Incorrect email or password!".into()))
+        if !valid_password {
+            return Err(AuthError::NotFound("Incorrect email or password!".into()));
         }
+
+        credential.set_last_authentication(connection)?;
+
+        Ok(credential)
     }
 
     fn associate(
@@ -54,18 +62,21 @@ impl PartialCredential<EmailPassword> for PartialEmailPassword {
             .hash_password(self.password.as_bytes(), &SaltString::generate(&mut OsRng))?
             .to_string();
 
+        let timestamp = Utc::now().naive_utc();
+
         let credential = InsertableEmailPassword {
             cid: &Uuid::new_v4(),
             uid: owner_uid,
             email: &self.email,
             password: &hashed_password,
             verified: false,
-            last_update: &Utc::now().naive_utc(),
-            last_authentication: &Utc::now().naive_utc(),
-            created: &Utc::now().naive_utc(),
+            last_update: &timestamp,
+            last_authentication: &timestamp,
+            created: &timestamp,
+            disabled: false,
         };
 
-        Ok(connection.transaction(|connection| {
+        connection.transaction::<EmailPassword, AuthError, _>(|connection| {
             let credential = diesel::insert_into(email_password_credentials::table)
                 .values(&credential)
                 .returning(EmailPassword::as_returning())
@@ -80,14 +91,14 @@ impl PartialCredential<EmailPassword> for PartialEmailPassword {
 
             diesel::insert_into(credentials::table)
                 .values(&credential_lookup)
-                .on_conflict(uid)
+                .on_conflict(credentials::dsl::uid)
                 .do_update()
                 .set(email_password.eq(credential.cid()))
                 .returning(CredentialLookup::as_returning())
                 .get_result(connection)?;
 
-            diesel::result::QueryResult::Ok(credential)
-        })?)
+            Ok(credential)
+        })
     }
 }
 
@@ -103,11 +114,13 @@ struct InsertableEmailPassword<'a> {
     pub last_update: &'a NaiveDateTime,
     pub last_authentication: &'a NaiveDateTime,
     pub created: &'a NaiveDateTime,
+    pub disabled: bool,
 }
 
-#[derive(Queryable, Selectable, Debug)]
+#[derive(Queryable, AsChangeset, Selectable, Debug)]
 #[diesel(table_name = email_password_credentials)]
 #[diesel(check_for_backend(Pg))]
+#[diesel(primary_key(cid))]
 pub struct EmailPassword {
     pub cid: Uuid,
     pub uid: Uuid,
@@ -117,62 +130,85 @@ pub struct EmailPassword {
     pub last_update: NaiveDateTime,
     pub last_authentication: NaiveDateTime,
     pub created: NaiveDateTime,
+    pub disabled: bool,
 }
 
 impl EmailPassword {
     pub fn get_by_email(connection: DatabaseConnection, query_email: &str) -> AuthResult<Self> {
-        use crate::schema::email_password_credentials::dsl::*;
-
-        Ok(diesel::QueryDsl::filter(
+        let credential = diesel::QueryDsl::filter(
             crate::schema::email_password_credentials::table,
             email.eq(query_email),
         )
-        .select(EmailPassword::as_select())
-        .first(connection)?)
+        .select(Self::as_select())
+        .first(connection)?;
+
+        // Checks if credential is disabled
+        if credential.disabled() {
+            return Err(AuthError::CredentialDisabled);
+        }
+
+        Ok(credential)
     }
 }
 
 impl Credential for EmailPassword {
-    fn last_authentication(&self) -> &NaiveDateTime {
-        &self.last_authentication
-    }
-
     fn created(&self) -> &NaiveDateTime {
         &self.created
     }
 
-    fn cid(&self) -> &Uuid {
-        &self.cid
+    fn last_authentication(&self) -> &NaiveDateTime {
+        &self.last_authentication
     }
 
-    fn uid(&self) -> &Uuid {
-        &self.uid
+    fn set_last_authentication(&mut self, connection: DatabaseConnection) -> AuthResult<()> {
+        if self.disabled() {
+            return Err(AuthError::CredentialDisabled);
+        }
+
+        self.last_authentication = Utc::now().naive_utc();
+        self.update(connection)
     }
 
-    fn get_by_cid(connection: DatabaseConnection, query_cid: &Uuid) -> AuthResult<Self> {
-        use crate::schema::email_password_credentials::dsl::*;
-
-        Ok(email_password_credentials
-            .find(query_cid)
-            .select(EmailPassword::as_select())
-            .first(connection)?)
+    fn verified(&self) -> bool {
+        self.verified
     }
 
-    fn get_by_uid(connection: DatabaseConnection, query_uid: &Uuid) -> AuthResult<Self> {
-        use crate::schema::email_password_credentials::dsl::*;
+    fn set_verified(
+        &mut self,
+        connection: DatabaseConnection,
+        updated_verified: bool,
+    ) -> AuthResult<()> {
+        self.verified = updated_verified;
+        self.update(connection)
+    }
 
-        Ok(diesel::QueryDsl::filter(
-            crate::schema::email_password_credentials::table,
-            uid.eq(query_uid),
-        )
-        .select(EmailPassword::as_select())
-        .first(connection)?)
+    fn disabled(&self) -> bool {
+        self.disabled
+    }
+
+    fn set_disabled(
+        &mut self,
+        connection: DatabaseConnection,
+        updated_disabled: bool,
+    ) -> AuthResult<()> {
+        self.disabled = updated_disabled;
+        self.update(connection)
+    }
+
+    fn last_update(&self) -> &NaiveDateTime {
+        &self.last_update
+    }
+
+    fn update(&self, connection: DatabaseConnection) -> AuthResult<()> {
+        diesel::update(email_password_credentials.find(self.cid()))
+            .set(self)
+            .execute(connection)?;
+
+        Ok(())
     }
 
     fn delete(&self, connection: DatabaseConnection) -> AuthResult<()> {
         connection.transaction(|connection| {
-            use crate::schema::{credentials::dsl::*, email_password_credentials::dsl::*};
-
             if !CredentialLookup::get_by_uid(connection, self.uid())?.has_multiple_credentials() {
                 return Err(AuthError::CredentialCannotDelete);
             }
@@ -185,6 +221,44 @@ impl Credential for EmailPassword {
 
             Ok(())
         })
+    }
+
+    fn cid(&self) -> &Uuid {
+        &self.cid
+    }
+
+    fn get_by_cid(connection: DatabaseConnection, query_cid: &Uuid) -> AuthResult<Self> {
+        let credential = email_password_credentials
+            .find(query_cid)
+            .select(Self::as_select())
+            .first(connection)?;
+
+        // Checks if credential is disabled
+        if credential.disabled() {
+            return Err(AuthError::CredentialDisabled);
+        }
+
+        Ok(credential)
+    }
+
+    fn uid(&self) -> &Uuid {
+        &self.uid
+    }
+
+    fn get_by_uid(connection: DatabaseConnection, query_uid: &Uuid) -> AuthResult<Self> {
+        let credential = diesel::QueryDsl::filter(
+            crate::schema::email_password_credentials::table,
+            email_password_credentials::dsl::uid.eq(query_uid),
+        )
+        .select(Self::as_select())
+        .first(connection)?;
+
+        // Checks if credential is disabled
+        if credential.disabled() {
+            return Err(AuthError::CredentialDisabled);
+        }
+
+        Ok(credential)
     }
 
     fn get_owner(&self, connection: DatabaseConnection) -> AuthResult<User> {
