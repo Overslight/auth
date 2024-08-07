@@ -1,0 +1,13 @@
+[package]
+name = "auth"
+version = "0.1.1"
+edition = "2021"
+authors = ["Federico Fusco <me@federicofusco.dev>"]
+
+[dependencies]
+argon2 = "0.5.3"
+chrono = "0.4.38"
+thiserror = { workspace = true }
+serde = { workspace = true }
+diesel = { workspace = true }
+uuid = { workspace = true }

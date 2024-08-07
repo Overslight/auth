@@ -6,8 +6,9 @@ use crate::{
     schema::{
         credentials::{self, email_password, uid},
         email_password_credentials,
-    },
+    }, user::User,
 };
+use chrono::{NaiveDateTime, Utc};
 use diesel::{pg::Pg, prelude::*};
 use uuid::Uuid;
 
@@ -19,6 +20,12 @@ use argon2::{
 pub struct PartialEmailPassword {
     pub email: String,
     pub password: String,
+}
+
+impl PartialEmailPassword {
+    pub fn new(email: String, password: String) -> Self {
+        Self { email, password }
+    }
 }
 
 impl PartialCredential<EmailPassword> for PartialEmailPassword {
@@ -34,7 +41,7 @@ impl PartialCredential<EmailPassword> for PartialEmailPassword {
         if valid_password {
             Ok(credential)
         } else {
-            Err(AuthError::NotFound)
+            Err(AuthError::NotFound("Incorrect email or password!".into()))
         }
     }
 
@@ -52,6 +59,10 @@ impl PartialCredential<EmailPassword> for PartialEmailPassword {
             uid: owner_uid,
             email: &self.email,
             password: &hashed_password,
+            verified: false,
+            last_update: &Utc::now().naive_utc(),
+            last_authentication: &Utc::now().naive_utc(),
+            created: &Utc::now().naive_utc(),
         };
 
         Ok(connection.transaction(|connection| {
@@ -63,6 +74,7 @@ impl PartialCredential<EmailPassword> for PartialEmailPassword {
             let credential_lookup = InsertableCredentialLookup {
                 uid: owner_uid,
                 email_password: Some(credential.cid()),
+                github_oauth: None,
             };
 
             diesel::insert_into(credentials::table)
@@ -86,17 +98,10 @@ struct InsertableEmailPassword<'a> {
     pub uid: &'a Uuid,
     pub email: &'a str,
     pub password: &'a str,
-}
-
-impl<'a> From<&'a EmailPassword> for InsertableEmailPassword<'a> {
-    fn from(value: &'a EmailPassword) -> Self {
-        Self {
-            cid: &value.cid,
-            uid: &value.uid,
-            email: &value.email,
-            password: &value.password,
-        }
-    }
+    pub verified: bool,
+    pub last_update: &'a NaiveDateTime,
+    pub last_authentication: &'a NaiveDateTime,
+    pub created: &'a NaiveDateTime,
 }
 
 #[derive(Queryable, Selectable, Debug)]
@@ -107,6 +112,10 @@ pub struct EmailPassword {
     pub uid: Uuid,
     pub email: String,
     pub password: String,
+    pub verified: bool,
+    pub last_update: NaiveDateTime,
+    pub last_authentication: NaiveDateTime,
+    pub created: NaiveDateTime,
 }
 
 impl EmailPassword {
@@ -123,6 +132,14 @@ impl EmailPassword {
 }
 
 impl Credential for EmailPassword {
+    fn last_authentication(&self) -> &NaiveDateTime {
+        &self.last_authentication
+    }
+
+    fn created(&self) -> &NaiveDateTime {
+        &self.created
+    }
+
     fn cid(&self) -> &Uuid {
         &self.cid
     }
@@ -149,5 +166,27 @@ impl Credential for EmailPassword {
         )
         .select(EmailPassword::as_select())
         .first(connection)?)
+    }
+
+    fn delete(&self, connection: DatabaseConnection) -> AuthResult<()> {
+        connection.transaction(|connection| {
+            use crate::schema::{credentials::dsl::*, email_password_credentials::dsl::*};
+
+            if !CredentialLookup::get_by_uid(connection, self.uid())?.has_multiple_credentials() {
+                return Err(AuthError::CredentialCannotDelete);
+            }
+
+            diesel::delete(email_password_credentials.find(self.cid())).execute(connection)?;
+
+            diesel::update(credentials.filter(email_password.eq(self.cid())))
+                .set(email_password.eq(None::<Uuid>))
+                .execute(connection)?;
+
+            Ok(())
+        })
+    }
+
+    fn get_owner(&self, _connection: DatabaseConnection) -> AuthResult<User> {
+        todo!()
     }
 }

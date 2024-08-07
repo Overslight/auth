@@ -1,18 +1,18 @@
-[package]
-name = "auth"
-version = "0.1.29"
-edition = "2021"
-authors = ["Federico Fusco"]
+[workspace]
+members = ["api", "auth"]
+resolver = "2"
 
-[dependencies]
+[workspace.dependencies]
 thiserror = "1.0.63"
-argon2 = "0.5.3"
-dotenvy = "0.15"
 
-[dependencies.uuid] 
-version = "1.10.0"
-features = ["v4", "fast-rng", "serde"]
+[workspace.dependencies.serde]
+version = "1"
+features = ["derive"]
 
-[dependencies.diesel]
+[workspace.dependencies.diesel]
 version = "2.2.0"
-features = ["postgres", "uuid"]
+features = ["postgres", "uuid", "r2d2", "chrono"]
+
+[workspace.dependencies.uuid]
+version = "1.10.0"
+features = ["v4", "fast-rng", "serde"] 

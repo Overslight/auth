@@ -1,14 +1,14 @@
 use crate::{
     credential::{Credential, CredentialLookup, PartialCredential},
     error::*,
-    schema::credentials,
 };
 use diesel::{pg::Pg, prelude::*};
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::{database::DatabaseConnection, schema::users};
 
-#[derive(Queryable, Selectable, Debug)]
+#[derive(Queryable, Selectable, Debug, Serialize)]
 #[diesel(table_name = users)]
 #[diesel(check_for_backend(Pg))]
 pub struct User {
@@ -25,24 +25,22 @@ struct InsertableUser<'a> {
 
 impl User {
     pub fn get_by_uid(connection: DatabaseConnection, query_uid: &Uuid) -> AuthResult<Self> {
-        Ok(users::table
+        users::table
             .find(query_uid)
             .select(User::as_select())
-            .first(connection)?)
+            .first(connection)
+            .map_err(AuthError::from)
     }
 
     pub fn credentials(&self, connection: DatabaseConnection) -> AuthResult<CredentialLookup> {
-        Ok(credentials::table
-            .find(self.uid())
-            .select(CredentialLookup::as_select())
-            .first(connection)?)
+        CredentialLookup::get_by_uid(connection, self.uid())
     }
 
-    pub fn new<T: Credential>(
+    pub fn new<C: Credential, P: PartialCredential<C>>(
         connection: DatabaseConnection,
-        partial_credential: Option<Box<dyn PartialCredential<T>>>,
+        partial_credential: P,
     ) -> AuthResult<Self> {
-        Ok(connection.transaction(|connection| {
+        Ok(connection.transaction::<User, AuthError, _>(|connection| {
             // Creates the user
             let user = InsertableUser {
                 uid: &Uuid::new_v4(),
@@ -53,19 +51,15 @@ impl User {
                 .returning(User::as_returning())
                 .get_result(connection)?;
 
-            if let Some(partial_credential) = partial_credential {
-                partial_credential
-                    .associate(connection, user.uid())
-                    .map_err(|_| diesel::result::Error::NotFound)?; // TODO: FIX ERROR TYPE
-            }
+            partial_credential.associate(connection, user.uid())?;
 
-            diesel::result::QueryResult::Ok(user)
+            Ok(user)
         })?)
     }
 
-    pub fn authenticate<T: Credential>(
+    pub fn authenticate<C: Credential, P: PartialCredential<C>>(
         connection: DatabaseConnection,
-        partial_credential: Box<dyn PartialCredential<T>>,
+        partial_credential: P,
     ) -> AuthResult<Self> {
         let credential = partial_credential.authenticate(connection)?;
         Self::get_by_uid(connection, credential.uid())
