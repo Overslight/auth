@@ -7,10 +7,12 @@ use diesel::prelude::*;
 use email_password::EmailPassword;
 use github::GithubOauth;
 use serde::{Deserialize, Serialize};
+use username_password::UsernamePassword;
 use uuid::Uuid;
-
+ 
 pub mod email_password;
 pub mod github;
+pub mod username_password;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum OauthProviders {
@@ -47,6 +49,7 @@ pub struct CredentialLookup {
     pub uid: Uuid,
     pub email_password: Option<Uuid>,
     pub github_oauth: Option<Uuid>,
+    pub username_password: Option<Uuid>,
 }
 
 impl CredentialLookup {
@@ -55,7 +58,7 @@ impl CredentialLookup {
     }
 
     pub fn has_multiple_credentials(&self) -> bool {
-        (self.email_password.is_some() as u32) + (self.github_oauth.is_some() as u32) > 1
+        (self.email_password.is_some() as u32) + (self.github_oauth.is_some() as u32) + (self.username_password.is_some() as u32) > 1
     }
 
     pub fn get_by_uid(connection: DatabaseConnection, query_uid: &Uuid) -> AuthResult<Self> {
@@ -83,6 +86,15 @@ impl CredentialLookup {
             )),
         }
     }
+
+    pub fn username_password(&self, connection: DatabaseConnection) -> AuthResult<UsernamePassword> {
+        match self.username_password {
+            Some(cid) => UsernamePassword::get_by_cid(connection, &cid),
+            None => Err(AuthError::NotFound(
+                "No username/password credential is associated!".into()
+            )),
+        }
+    }
 }
 
 #[derive(Insertable, Debug)]
@@ -92,4 +104,5 @@ struct InsertableCredentialLookup<'a> {
     pub uid: &'a Uuid,
     pub email_password: Option<&'a Uuid>,
     pub github_oauth: Option<&'a Uuid>,
+    pub username_password: Option<&'a Uuid>,
 }

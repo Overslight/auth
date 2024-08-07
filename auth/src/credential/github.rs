@@ -60,6 +60,7 @@ impl PartialCredential<GithubOauth> for PartialGithubOauth {
                 uid: owner_uid,
                 email_password: None,
                 github_oauth: Some(credential.cid()),
+                username_password: None,
             };
 
             diesel::insert_into(credentials::table)
@@ -168,7 +169,7 @@ impl Credential for GithubOauth {
         })
     }
 
-    fn get_owner(&self, _connection: DatabaseConnection) -> AuthResult<User> {
-        todo!()
+    fn get_owner(&self, connection: DatabaseConnection) -> AuthResult<User> {
+        User::get_by_uid(connection, &self.uid())
     }
 }
